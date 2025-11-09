@@ -8,7 +8,7 @@
 
 ---
 
-## Nisa Kurt
+## Nisa Nur Kurt
 - **Ortam Kurulumu & Araçlar**  
   Python, OpenCV, Mediapipe, NumPy kurulumu, sanal ortam.  
   **Çıktı:** `env_setup.py`, `README.md`
