@@ -9,6 +9,7 @@ a = 2
 b = 3
 c = "ben nisa" 
 d = "bende nisa memnun oldum"
+f = "Bende nehir gençler" 
 
 def create_target_dirs():
     for split in ["train", "val", "test"]:
