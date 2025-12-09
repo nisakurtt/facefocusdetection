@@ -6,6 +6,7 @@ SOURCE_DIR = "/Users/nisakurt/Desktop/proje/prepared/face/"
 TARGET_DIR = "/Users/nisakurt/Desktop/proje/final_dataset"     
 IMAGE_SIZE = (224, 224)
 a = 2
+b = 3
 
 def create_target_dirs():
     for split in ["train", "val", "test"]:
