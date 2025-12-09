@@ -8,6 +8,7 @@ IMAGE_SIZE = (224, 224)
 a = 2
 b = 3
 c = "ben nisa" 
+d = "bende nisa memnun oldum"
 
 def create_target_dirs():
     for split in ["train", "val", "test"]:
