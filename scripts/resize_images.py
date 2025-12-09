@@ -10,7 +10,7 @@ b = 3
 c = "ben nisa" 
 d = "bende nisa memnun oldum"
 f = "Bende nehir gençler" 
-
+e="hosgeldin cnm"
 def create_target_dirs():
     for split in ["train", "val", "test"]:
         for cls in ["focused", "not_focused", "sleepy"]:
