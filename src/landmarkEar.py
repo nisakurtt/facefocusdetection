@@ -4,6 +4,7 @@ import mediapipe as mp
 import math
 import numpy as np
 import time
+from datetime import datetime
 
 mp_drawing = mp.solutions.drawing_utils 
 mp_face_mesh = mp.solutions.face_mesh #yüz modülü
@@ -38,7 +39,7 @@ def label_eye_state(avg_ear, threshold=EAR_THRESHOLD):
 
 # Frame kaydetme fonksiyonu
 def save_frame(frame, label):  #Frame' i labele göre uygun klasöre kaydeder.
-    timestamp = time.strftime("%Y%m%d_%H%M%S_%f")  #Anlık tarih + saat + milisaniye
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  #Anlık tarih + saat + milisaniye
     #timestamp kullandık çünkü aynı isimle dosya çakışmasını önlüyor.
     #datasetin kronolojik ve düzenli şekilde oluşmasını sağlıyor.
     if label == "open":
