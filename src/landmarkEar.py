@@ -146,13 +146,91 @@ def prepare_for_cnn (roi_image,target_size=(64,64)):
     reshaped = np.reshape(normalized, (1, 1, target_size[0], target_size[1]))#şekillendir
     return reshaped
 
+# (GÖZ ROI TEMİZLEME + STANDARTLAŞTIRMA)
+
+def blur_score(gray):
+    """
+    Bu fonksiyon görüntünün bulanık olup olmadığını anlamak için var.
+    Değer küçükse görüntü bulanıktır (net değil demektir).
+    """
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+def saturated_ratio(gray, low=5, high=250):
+    """
+    Bu fonksiyon görüntüde aşırı siyah / aşırı beyaz piksellerin oranını bulur.
+    Işık patlaması veya çok karanlık görüntüleri elemek için kullanırız.
+    """
+    total = gray.size
+    if total == 0:
+        return 1.0
+    saturated_pixels = np.sum((gray <= low) | (gray >= high))
+    return float(saturated_pixels) / float(total)
+
+def clean_and_normalize_eye_roi(
+    roi_bgr,
+    target_size=(64, 64),
+    min_area=20*20,
+    min_lap_var=35.0,
+    min_mean=20.0,
+    max_mean=235.0,
+    max_sat_ratio=0.20,
+    use_clahe=True
+):
+    """
+    Dataset'e çöp veri girmesin.
+
+    ROI (göz görüntüsü) şu kontrollerden geçmezse kaydetmiyorum:
+    - Çok küçükse
+    - Çok karanlık / çok parlaksa
+    - Bulanıksa
+    - Aşırı siyah/beyaz oranı fazlaysa
+
+    Geçerse:
+    - griye çeviriyorum
+    - 64x64'e sabitliyorum
+    - ışığı biraz dengeliyorum (CLAHE)
+    - dataset'e kaydedilecek temiz patch döndürüyorum
+    """
+    if roi_bgr is None or roi_bgr.size == 0:
+        return None
+
+    h, w = roi_bgr.shape[:2]
+    if h * w < min_area:
+        return None
+
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+
+    mean_intensity = np.mean(gray)
+    if mean_intensity < min_mean or mean_intensity > max_mean:
+        return None
+
+    if blur_score(gray) < min_lap_var:
+        return None
+
+    if saturated_ratio(gray) > max_sat_ratio:
+        return None
+
+    gray = cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
+
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+
+    return gray
+
+
+#SAYAÇLAR
+saved_eye_count = 0      # Dataset'e giren temiz göz sayısı
+rejected_eye_count = 0   # Kalite filtresinden geçemeyen göz sayısı
+total_eye_count = 0      # Kontrol edilen toplam göz sayısı
+
 
 #modeli başlat
 face_mesh = mp_face_mesh.FaceMesh(
     static_image_mode=False,
     max_num_faces=2, #aynı anda en fazla 2 yüz tespiti
     refine_landmarks=True, #daha fazla yüz detayı için
-    #false olursa sadece göz apağı çevresini verir(468 nokta)
+    #false olursa sadece göz kapağı çevresini verir(468 nokta)
     #true olursa gözün irisini çevreleyen ekstra noktaları da verir(478)
     #kişinin sağa sola baktığını anlamak için buna ihtiyacımız olucak.
     min_detection_confidence=0.5, #algılama
@@ -209,7 +287,29 @@ while cap.isOpened():
         # belirli aralıklarla kaydet
         # last_save_time döngü öncesinde 0 olarak başlatılmalı!
         if current_time - last_save_time >= SAVE_INTERVAL: 
-            save_frame(frame, label) #open/closed klasörüne kaydeder.
+            # open/closed için TAM FRAME yerine GÖZ PATCH kaydediyoruz.
+            left_roi0 = extract_eye_roi(frame, left_points0, image_w, image_h)
+            right_roi0 = extract_eye_roi(frame, right_points0, image_w, image_h)
+
+            left_patch0 = clean_and_normalize_eye_roi(left_roi0)
+            right_patch0 = clean_and_normalize_eye_roi(right_roi0)
+
+            # Sol göz sayacı
+            total_eye_count += 1
+            if left_patch0 is not None:
+                save_frame(left_patch0, label)  #open/closed klasörüne kaydeder.
+                saved_eye_count += 1
+            else:
+                rejected_eye_count += 1
+
+            # Sağ göz sayacı
+            total_eye_count += 1
+            if right_patch0 is not None:
+                save_frame(right_patch0, label) #open/closed klasörüne kaydeder.
+                saved_eye_count += 1
+            else:
+                rejected_eye_count += 1
+
             last_save_time = current_time #en son kayıt zamanını günceller.
 
 
@@ -272,6 +372,16 @@ while cap.isOpened():
         if current_time - last_save_time >= SAVE_INTERVAL:
             save_frame(frame, "unfocused") # unfocused klasörüne kaydeder.
             last_save_time = current_time
+
+    # CANLI SAYAÇ GÖSTERİMİ
+    cv2.putText(frame, f"Toplam Goz: {total_eye_count}", (30, 260),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    cv2.putText(frame, f"Kaydedilen: {saved_eye_count}", (30, 290),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    cv2.putText(frame, f"Elenen: {rejected_eye_count}", (30, 320),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
 
     cv2.imshow('MediaPipe FaceMesh', frame)
