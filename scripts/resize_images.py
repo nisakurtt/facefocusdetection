@@ -1,59 +1,93 @@
-import cv2
 import os
+import cv2
+import time
+
+# EAR eşik değeri (deneysel, genelde 0.20–0.25 arası iyi çalışır)
+EAR_THRESHOLD = 0.23
+#Göz açıkken EAR genelde daha büyük çıkar. EAR>= threshold ise göz açıktır.
 
 
-SOURCE_DIR = "/Users/nisakurt/Desktop/proje/prepared/face/"     
-TARGET_DIR = "/Users/nisakurt/Desktop/proje/final_dataset"     
-IMAGE_SIZE = (224, 224)
+# Kayıt aralığı (her kaç saniyede 1 frame kaydedilsin)
+SAVE_INTERVAL = 0.5  
+
+# Dataset yolları
+#Verileri otomatik olarak 3 sınıfa ayıracağız.
+BASE_DIR = "dataset"   
+OPEN_DIR = os.path.join(BASE_DIR, "open_eye")
+CLOSED_DIR = os.path.join(BASE_DIR, "closed_eye")
+UNFOCUSED_DIR = os.path.join(BASE_DIR, "unfocused")
+
+# Klasörleri otomatik oluştur
+for path in [OPEN_DIR, CLOSED_DIR, UNFOCUSED_DIR]:
+    os.makedirs(path, exist_ok=True)   # exist_ok=True -> klasör zaten varsa hata verme devam et demek
+ 
+
+#EAR değerine göre etiket belirleme fonksiyonu  
+
+def label_eye_state(avg_ear, threshold=EAR_THRESHOLD):
+    
+    if avg_ear >= threshold:
+        return "open"
+    else:
+        return "closed"
 
 
-def create_target_dirs():
-    for split in ["train", "val", "test"]:
-        for cls in ["focused", "not_focused", "sleepy"]:
-            os.makedirs(f"{TARGET_DIR}/{split}/{cls}", exist_ok=True)
+# Frame kaydetme fonksiyonu
+def save_frame(frame, label):  #Frame' i labele göre uygun klasöre kaydeder.
+    timestamp = time.strftime("%Y%m%d_%H%M%S_%f")  #Anlık tarih + saat + milisaniye
+    #timestamp kullandık çünkü aynı isimle dosya çakışmasını önlüyor.
+    #datasetin kronolojik ve düzenli şekilde oluşmasını sağlıyor.
+    if label == "open":
+        path = os.path.join(OPEN_DIR, f"{timestamp}.jpg") #İşletim sistemine uygun dosya yolu oluşturur.
+    elif label == "closed":
+        path = os.path.join(CLOSED_DIR, f"{timestamp}.jpg")
+    else:  # unfocused
+        path = os.path.join(UNFOCUSED_DIR, f"{timestamp}.jpg")
+    
+    #Frame 'i diske kaydetme 
+    cv2.imwrite(path, frame)  #Kameradan gelen görüntüyü JPEG olarak kaydeder.Dataset burada büyür.
+    # path : dosyanın kaydedileceği yer , frame : kameradan alınan görüntü
 
-def get_all_files():
-    data = {}
-    for cls in ["focused", "not_focused", "sleepy"]:
-        folder = f"{SOURCE_DIR}/{cls}"
-        files = [f"{folder}/{f}" for f in os.listdir(folder) if f.lower().endswith((".jpg",".jpeg",".png"))]
-        data[cls] = files
-    return data
 
-def split(files):
-    import random
-    random.shuffle(files)
-    n = len(files)
-    train = int(n * 0.8)
-    val = int(n * 0.1)
-    return files[:train], files[train:train+val], files[train+val:]
+#Şuanki zamanı saniye cinsinden verir.
+current_time = time.time()  #Amacımız kayıt aralığını kontrol etmek
 
-def process_files(files, split, cls):
-    for file_path in files:
-        img = cv2.imread(file_path)
-        if img is None:
-            continue
+# yüz VARSA (FaceMesh landmark bulduysa)
+if results.multi_face_landmarks:
+    label = label_eye_state(avg_ear)  # etiket üret
 
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, IMAGE_SIZE)
+    cv2.putText(frame, f"Label: {label.upper()}", #Ekrana etiketi yazdır.
+                (30, 200),  #Yazının ekrandaki konumu
+                cv2.FONT_HERSHEY_SIMPLEX, 1,
+                (0, 255, 255), 2)
 
-        file_name = os.path.basename(file_path)
-        save_path = f"{TARGET_DIR}/{split}/{cls}/{file_name}"
+    # belirli aralıklarla kaydet
+    # last_save_time döngü öncesinde 0 olarak başlatılmalı!
+    if current_time - last_save_time >= SAVE_INTERVAL: 
+        save_frame(frame, label) #open/closed klasörüne kaydeder.
+        last_save_time = current_time #en son kayıt zamanını günceller.
 
-        cv2.imwrite(save_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+# yüz YOKSA -> ODAKSIZ
+else:
+    #Yüz algılamadıysa ekrana UNFOCUSED yaz.
+    cv2.putText(frame, "Label: UNFOCUSED", 
+                (30, 200),
+                cv2.FONT_HERSHEY_SIMPLEX, 1,
+                (0, 0, 255), 2)
+    #Yüz yokken de dataset toplamak için belirli aralıkla kaydet
+    if current_time - last_save_time >= SAVE_INTERVAL:
+        save_frame(frame, "unfocused") # unfocused klasörüne kaydeder.
+        last_save_time = current_time
+        
+        
+        
+        
+  # Döngü öncesine bunu ekle (çok önemli)
 
-def main():
-    create_target_dirs()
-    data = get_all_files()
+last_save_time = 0  
+#Frame kayıt zamanını kontrol etmek için kullanılan sayaçtır.
+#Döngü başlamadan önce 0 atanarak ilk kayıt işlemi başlar.
 
-    for cls, files in data.items():
-        train_files, val_files, test_files = split(files)
 
-        process_files(train_files, "train", cls)
-        process_files(val_files, "val", cls)
-        process_files(test_files, "test", cls)
 
-    print("✔ Tüm fotoğraflar 224x224'e dönüştürüldü ve final dataset hazır!")
 
-if __name__ == "__main__":
-    main()
