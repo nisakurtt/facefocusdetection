@@ -9,53 +9,22 @@ from model import EyeStateFocusModel  # Kişi 1'in hazırladığı CNN model yap
 from ear_utils import calculate_ear_formula
 from roi_utils import extract_eye_roi
 
+# MediaPipe canlı tahmin için gerekli
+import mediapipe as mp
 
-class CameraPipeline:
-    def __init__(self,camera_id: int = 0,target_size: Optional[Tuple[int, int]] = (640,480)):
-        self.camera_id = camera_id #camera_id : 0 dahili kameradır.
-        self.target_size = target_size #pipeline boyunca frame boyutunu standart tuttar.
-        
-        self.cap = cv2.VideoCapture(self.camera_id) #Kamerayı başlatır.Donanımsal.
-        if not self.cap.isOpened(): #Kamera açılmazsa hata verir.
-            raise RuntimeError(f"Kamera açılamadı. camera_id = {self.camera_id}")
-        
-        self.prev_time = time.time() #fps için bir önceki frame'in zamanı
-        self.frame_id = 0 #frame sayacı debug + takip
-        self.fps = 0.0 #anlık fps değeri    
-        
-        #bir adet frame + meta döndürür.
-    def read(self) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
-             # ret : frame alındı mı, frame : alınan görüntü (numpy array, bgr formatında mı?)
-            ret, frame = self.cap.read() #kameradan bir anlık fotoğraf çeker. 'ret' başarı durumudur
-            if not ret or frame is None:  #kamera anlık olarak frame vermezse sistemi çökertme.
-                return None, None
-            
-            
-            
-            #Tam frame resize edilir. ROI değil. analiz yok. sadece performans ve tuttarlılık.
-            if self.target_size is not None:
-                frame = cv2.resize(frame, self.target_size) 
-                
-            #fps hesaplama
-            now = time.time()
-            dt = now - self.prev_time
-            self.prev_time = now
-            if dt > 0:
-                self.fps = 1.0 / dt #fps = 1/-iki frame arası süre-
+# Aşama 1'de kullanılan göz landmark indexleri
+LEFT_EYE = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
-            self.frame_id += 1
-            
-            meta = {
-                "frame_id": self.frame_id,
-                "timestamp": now,
-                "fps": round(self.fps, 2),
-                "shape": frame.shape #(height, width, channels)
-            }
-            return frame, meta
-
-    def release(self) -> None:
-            if self.cap is not None:
-                self.cap.release() #kamera kaynağını serbest bırakır.
+def get_eye_landmarks(face_landmarks, eye_indices):
+    """
+    Aşama 1'de kullanılan fonksiyonun aynısı.
+    Yüz landmarklarından sadece göz noktalarını alır.
+    """
+    eye_points = []
+    for idx in eye_indices:
+        eye_points.append(face_landmarks.landmark[idx])
+    return eye_points
 
 
 class EyeStatePredictor:
@@ -65,7 +34,6 @@ class EyeStatePredictor:
     device=None,
     class_map=None,
     ear_threshold=0.23,   # EAR için açık/kapalı eşiği [cite: 79]
-    cnn_open_threshold=0.50,    # CNN olasılık eşiği
     cnn_conf_threshold=0.60, # CNN'e güvenme eşiği (%60 altıysa EAR'a sor)
     norm_mean=None,
     norm_std=None,
@@ -73,18 +41,18 @@ class EyeStatePredictor:
         
         # İşlemciyi (GPU veya CPU) belirliyoruz.
     self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 2 sınıflı model
-    self.model = EyeStateFocusModel(num_classes=2).to(self.device)
+    # 3 sınıflı model (closed_eye / open_eye / unfocused)
+    self.model = EyeStateFocusModel(num_classes=3).to(self.device)
     self.model.load_state_dict(torch.load(model_path, map_location=self.device))
     self.model.eval()  # Modeli eğitim modundan test (tahmin) moduna alıyoruz.
 
-    # 2-sınıf mapping: BUNU 3-sınıflı class_to_idx ile karıştırma.
-    # Training'de open/closed hangi sıradaysa onu yaz.
-    self.class_map = class_map if class_map else {0: "closed", 1: "open"}
+    # 3-sınıf mapping: training'deki class_to_idx ile UYUMLU olmalı
+    # (Sende eğitim çıktısı: {'closed_eye': 0, 'open_eye': 1, 'unfocused': 2})
+    self.class_map = class_map if class_map else {0: "closed_eye", 1: "open_eye", 2: "unfocused"}
+
+   
 
     self.ear_threshold = ear_threshold
-    self.cnn_open_threshold = cnn_open_threshold
     self.cnn_conf_threshold = cnn_conf_threshold
 
     # Eğitimde Normalize kullanıldıysa burada da aynı olmalı
@@ -123,29 +91,34 @@ class EyeStatePredictor:
       conf = float(probs[pred_idx].item())    # Bu tahminin güven skorunu al (% kaç emin?).
 
     label = self.class_map[pred_idx]
-        # 'open' sınıfının olasılığını ayrıca sakla.
-    prob_open = float(probs[1].item()) if 1 in self.class_map and self.class_map[1] == "open" else None
-    return {"label": label, "conf": conf, "prob_open": prob_open}
+    return {
+    "label": label,
+    "conf": conf
+}
 
-  def fuse(self, ear_val, cnn_out):  # EAR ve CNN sonuçlarını birleştirerek son kararı verir.
-        # Senaryo 1: ROI alınamadıysa veya CNN çalışmadıysa sadece EAR'a güven.
-    # CNN yoksa -> EAR
+  def fuse(self, ear_val, cnn_out):
+    # CNN yoksa -> EAR ile sadece open_eye / closed_eye kararı verilir
     if cnn_out is None:
-      return "open" if ear_val >= self.ear_threshold else "closed"
+        return "open_eye" if ear_val >= self.ear_threshold else "closed_eye"
 
-    # Senaryo 2: CNN tahmini yaptı ama güven skoru düşükse (Örn: %55), EAR'a sor.
-        # CNN güveni düşükse -> EAR
+ #NOT: Asıl "unfocused" kararı MediaPipe ile (yüz yoksa) veriliyor. Ama model eğitiminde unfocused sınıfı da olduğu için,CNN bazen düşük kalite / yanlış ROI durumlarını "unfocused" diye işaretleyebilir.
+ # Bu yüzden burada ekstra bir güvenlik kuralı olarak bırakıldı.
+
+    if cnn_out["label"] == "unfocused" and cnn_out["conf"] >= self.cnn_conf_threshold:
+        return "unfocused"
+
+    # CNN güveni düşükse -> EAR'a dön (open/closed)
     if cnn_out["conf"] < self.cnn_conf_threshold:
-      return "open" if ear_val >= self.ear_threshold else "closed"
+        return "open_eye" if ear_val >= self.ear_threshold else "closed_eye"
 
-        # Senaryo 3: CNN kendine güveniyorsa (%60+), CNN'in dediğini kabul et.
-    # CNN güvenliyse -> CNN
+    # CNN güvenliyse -> CNN sonucunu kabul et
     return cnn_out["label"]
 
+
   def get_prediction(self, frame, eye_landmarks, image_w, image_h):
-        # 1. Matematiksel EAR hesapla. [cite: 91]
+        # 1. Matematiksel EAR hesapla. [deneysel]
     ear_val = calculate_ear_formula(eye_landmarks)
-        # 2. Göz bölgesini (ROI) kesip al. [cite: 94]
+        # 2. Göz bölgesini (ROI) kesip al. [deneysel]
     roi = extract_eye_roi(frame, eye_landmarks, image_w, image_h)
         # 3. CNN tahminini al.
     cnn_out = self.predict_cnn(roi)
@@ -163,38 +136,12 @@ class EyeStatePredictor:
 
 
 
-def main():
-    cam = CameraPipeline(camera_id=0,target_size=(640,480))
-    
-    try:
-        while True: # kamera bağlantısı koparsa kontrollü çıkış
-            frame, meta = cam.read()
-            if frame is None:
-                print("Kamera görüntüsü alınamadı.")
-                break
-            
-            #DEBUG : fps göster - karar yok-
-            cv2.putText(
-                frame, 
-                f"FPS: {meta['fps']} | Frame: {meta['frame_id']}",
-                (20,40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0,255,0),
-                2
-            )
-            cv2.imshow("CameraPipeline", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"): #q ile çıkış
-                break
-    finally:
-        cam.release()
-        cv2.destroyAllWindows()
-        
-if __name__ == "__main__": #pipeline çalışıyor mu, fps akıyor mu, kamera stabil mi?
-    main()
-   
-#Neden iki sınıf : camerapipeline = öğretici /debug/basir test
-#theadedcamerapipeline = gerçek uygulama için
+# NOT: Bu dosyada sınıflandırma 3 sınıf:
+# closed_eye / open_eye / unfocused
+# (unfocused: yüz yok ya da model düşük güven / kötü ROI senaryoları)
+#
+# ThreadedCameraPipeline: gerçek zamanlı akışta takılmayı azaltmak için kullanılır.
+
 
 class ThreadedCameraPipeline:
     #amacı : kamerayı ayrı bir thread ' de sürekli okutmak,
@@ -278,13 +225,53 @@ def main():
 
     # 2. Tahmin Modülünü Başlat (Kişi 2)
     predictor = EyeStatePredictor(model_path="eye_state_cnn.pth")
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+    static_image_mode=False,
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
     
     try:
         while True:
             frame, meta = cam.read()
             if frame is None:
                 continue #frame yüklenmesini bekle
-            
+
+
+            # Varsayılan: yüz yoksa unfocused
+            final_status = "unfocused"
+            left_status = None
+            right_status = None
+
+            image_h, image_w, _ = frame.shape
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb)
+
+            if results.multi_face_landmarks:
+                face0 = results.multi_face_landmarks[0]
+
+                left_pts = get_eye_landmarks(face0, LEFT_EYE)
+                right_pts = get_eye_landmarks(face0, RIGHT_EYE)
+
+                left_out = predictor.get_prediction(frame, left_pts, image_w, image_h)
+                right_out = predictor.get_prediction(frame, right_pts, image_w, image_h)
+
+                left_status = left_out["final_status"]
+                right_status = right_out["final_status"]
+
+                # İki göz birleşimi (öncelik: unfocused > closed_eye > open_eye)
+                if left_status == "unfocused" or right_status == "unfocused":
+                    final_status = "unfocused"
+                elif left_status == "closed_eye" or right_status == "closed_eye":
+                    final_status = "closed_eye"
+                else:
+                    final_status = "open_eye"
+
+
             #FPS ve Bilgileri Ekrana yazdır
             cv2.putText(
                 frame, 
@@ -295,6 +282,16 @@ def main():
                 (0,255,0),
                 2
             )
+            cv2.putText(
+                frame,
+                f"STATUS: {final_status.upper()}",
+                (20, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 255),
+                2
+            )
+
             cv2.imshow("ThreadedCameraPipeline", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
