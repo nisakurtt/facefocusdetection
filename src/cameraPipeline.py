@@ -6,9 +6,7 @@ import numpy as np
 from typing import Optional, Tuple,Dict, Any # Kodun okunabilirliği ve hata payını düşürmek için tip belirleyiciler.
 import threading # arka planda pararlel işlem yapmak için.
 from model import EyeStateFocusModel  # Kişi 1'in hazırladığı CNN model yapısını içeri aktarıyoruz.
-from ear_utils import calculate_ear_formula
-from roi_utils import extract_eye_roi
-
+from landmarkEar import calculate_ear_formula, extract_eye_roi
 # MediaPipe canlı tahmin için gerekli
 import mediapipe as mp
 
@@ -250,7 +248,6 @@ def main():
             image_h, image_w, _ = frame.shape
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = face_mesh.process(rgb)
-
             if results.multi_face_landmarks:
                 face0 = results.multi_face_landmarks[0]
 
@@ -270,6 +267,35 @@ def main():
                     final_status = "closed_eye"
                 else:
                     final_status = "open_eye"
+
+                # DEBUG: sol ve sağ göz detayları
+                cv2.putText(
+                    frame,
+                    f"L EAR: {left_out['ear_value']} | L CNN: {left_out['cnn_label']} ({left_out['cnn_conf']}) | L FINAL: {left_out['final_status']}",
+                    (20, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1
+                )
+
+                cv2.putText(
+                    frame,
+                    f"R EAR: {right_out['ear_value']} | R CNN: {right_out['cnn_label']} ({right_out['cnn_conf']}) | R FINAL: {right_out['final_status']}",
+                    (20, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1
+                )
+
+
+            
+                
+                
+                    
+        
+                    
 
 
             #FPS ve Bilgileri Ekrana yazdır

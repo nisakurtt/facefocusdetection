@@ -99,7 +99,7 @@ def create_dataloaders_simplified(base_dir=BASE_DIR, batch_size=BATCH_SIZE, trai
 #CNN Mimarisi
 
 class EyeStateFocusModel(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=3):
         super(EyeStateFocusModel, self).__init__()
         #Katmanları Tanımlama
         
